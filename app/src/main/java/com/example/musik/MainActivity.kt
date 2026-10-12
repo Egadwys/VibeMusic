@@ -414,15 +414,33 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  LaunchedEffect(ctrl) {
   val p = ctrl ?: return@LaunchedEffect
   if (p.mediaItemCount == 0) {
+   // pulihkan mode shuffle & repeat yang tersimpan
+   val sSaved = appSp.getBoolean("shuffle", false)
+   val rSaved = appSp.getInt("repeat", Player.REPEAT_MODE_OFF)
+   p.shuffleModeEnabled = sSaved
+   p.repeatMode = rSaved
+   shuffle = sSaved
+   repeat = rSaved
+
    val lastId = appSp.getString("last_id", null)
    val lastSong = byId[lastId?.toLongOrNull() ?: 0L]
    if (lastSong != null) {
     val lastPos = appSp.getLong("last_pos", 0L)
-    p.setMediaItem(lastSong.item(), lastPos)
+    // pulihkan seluruh antrean, bukan hanya satu lagu, supaya next/prev dan repeat tetap jalan
+    val queue = appSp.getString("queue", null)
+     ?.split(',')?.mapNotNull { it.toLongOrNull() }?.mapNotNull { byId[it] }.orEmpty()
+    val idx = queue.indexOfFirst { it.id == lastSong.id }
+    if (idx >= 0) p.setMediaItems(queue.map { it.item() }, idx, lastPos)
+    else p.setMediaItem(lastSong.item(), lastPos)
     p.prepare()
    }
   }
   restored = true
+ }
+
+ // simpan shuffle & repeat setiap kali berubah (setelah pemulihan selesai)
+ LaunchedEffect(shuffle, repeat) {
+  if (restored) appSp.edit().putBoolean("shuffle", shuffle).putInt("repeat", repeat).apply()
  }
 
  fun animateSheet(target:Float,vel:Float=0f){
@@ -432,7 +450,11 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
   }
  }
  BackHandler(expanded||detail!=null){if(expanded)animateSheet(0f) else detail=null}
- fun play(l:List<Song>,i:Int){ctrl?.run{setMediaItems(l.map{it.item()},i,0L);prepare();play()}}
+ fun play(l:List<Song>,i:Int){
+  // simpan antrean agar bisa dipulihkan setelah aplikasi ditutup
+  appSp.edit().putString("queue",l.joinToString(","){it.id.toString()}).apply()
+  ctrl?.run{setMediaItems(l.map{it.item()},i,0L);prepare();play()}
+ }
  val cur=remember(byId,nowId){nowId?.toLongOrNull()?.let{byId[it]}}
  val dragState = rememberDraggableState{ dy -> sheetP = (sheetP - dy/hPx).coerceIn(0f,1f) }
  fun settle(v:Float){
