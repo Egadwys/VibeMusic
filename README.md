@@ -81,7 +81,7 @@ docs/
 
 ```
 app/src/main/
-├── java/com/example/musik/
+├── java/com/ega/project/vibemusic/
 │   ├── MainActivity.kt   # Tema, UI Compose, navigasi, sheet pemutar, visualizer
 │   ├── Service.kt        # PlaybackService (Media3) + PlayerWidget
 │   ├── Data.kt           # Song, MediaStore, Playlists, cover, metadata, klien LRCLIB
