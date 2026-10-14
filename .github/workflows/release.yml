@@ -28,7 +28,7 @@ jobs:
       - name: Accept SDK licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
       - name: Build release APK
-        run: gradle assembleRelease --no-daemon
+        run: gradle assembleRelease --no-daemon -PappVersion="${VERSION}" -PappVersionCode=${{ github.run_number }}
       - name: Rename APK
         run: mv app/build/outputs/apk/release/*.apk "VibeMusic-v${VERSION}.apk"
       - name: Publish to Releases
