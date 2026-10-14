@@ -1,7 +1,7 @@
 plugins{id("com.android.application");id("org.jetbrains.kotlin.android");id("org.jetbrains.kotlin.plugin.compose")}
 android{
  namespace="com.ega.project.vibemusic";compileSdk=35
- defaultConfig{applicationId="com.ega.project.vibemusic";minSdk=30;targetSdk=35;versionCode=1;versionName="1.0"}
+ defaultConfig{applicationId="com.ega.project.vibemusic";minSdk=30;targetSdk=35;versionCode=(project.findProperty("appVersionCode") as String?)?.toInt()?:1;versionName=(project.findProperty("appVersion") as String?)?:"1.0"}
  buildFeatures{compose=true}
  buildTypes{release{isMinifyEnabled=true;isShrinkResources=true
   proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"));signingConfig=signingConfigs.getByName("debug")}}
