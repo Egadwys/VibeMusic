@@ -1,0 +1,11 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+ android:id="@+id/wroot" android:layout_width="match_parent" android:layout_height="match_parent"
+ android:orientation="horizontal" android:gravity="center_vertical" android:padding="12dp" android:background="#F0000000">
+ <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+  <TextView android:id="@+id/wt" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="#FFFFFF" android:textSize="15sp" android:textStyle="bold" android:maxLines="1" android:ellipsize="end"/>
+  <TextView android:id="@+id/wa" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="#B0B0B0" android:textSize="12sp" android:maxLines="1" android:ellipsize="end"/>
+ </LinearLayout>
+ <ImageButton android:id="@+id/wp" android:layout_width="40dp" android:layout_height="40dp" android:background="@null" android:tint="#FFFFFF" android:src="@android:drawable/ic_media_previous"/>
+ <ImageButton android:id="@+id/wpp" android:layout_width="44dp" android:layout_height="44dp" android:background="@null" android:tint="#FFFFFF" android:src="@android:drawable/ic_media_play"/>
+ <ImageButton android:id="@+id/wn" android:layout_width="40dp" android:layout_height="40dp" android:background="@null" android:tint="#FFFFFF" android:src="@android:drawable/ic_media_next"/>
+</LinearLayout>

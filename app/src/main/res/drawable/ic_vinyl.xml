@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1254"
+    android:viewportHeight="1254">
+
+    <!-- Background hitam berbentuk lingkaran -->
+    <path
+        android:fillColor="#050709"
+        android:pathData="M116,605 a507,507 0 1,0 1014,0 a507,507 0 1,0 -1014,0" />
+
+    <!-- Lingkaran luar -->
+    <path
+        android:strokeColor="#E8F0F8"
+        android:strokeWidth="4"
+        android:pathData="M116,605 a507,507 0 1,0 1014,0 a507,507 0 1,0 -1014,0" />
+
+    <!-- Lingkaran tengah -->
+    <path
+        android:strokeColor="#E8F0F8"
+        android:strokeWidth="4"
+        android:pathData="M199,604 a425,425 0 1,0 850,0 a425,425 0 1,0 -850,0" />
+
+    <!-- Lingkaran dalam -->
+    <path
+        android:strokeColor="#E8F0F8"
+        android:strokeWidth="4"
+        android:pathData="M251,604 a373,373 0 1,0 746,0 a373,373 0 1,0 -746,0" />
+
+    <!-- Huruf V + M -->
+    <path
+        android:fillColor="#1AAFAA"
+        android:pathData="M316,454 L413,454 L511,629 L623,454 L685,454 L769,572 L864,454 L928,454 L928,773 L851,773 L851,577 L766,689 L662,546 L511,780 Z" />
+
+    <!-- Bentuk "i" / atap di tengah -->
+    <path
+        android:fillColor="#1AAFAA"
+        android:pathData="M620,648 L662,584 L688,622 L688,773 L620,773 Z" />
+</vector>
