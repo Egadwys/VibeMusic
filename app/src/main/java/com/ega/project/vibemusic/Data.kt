@@ -15,11 +15,22 @@ import java.net.*
 
 const val UA="Artis tidak dikenal";const val UB="Album tidak dikenal";const val UG="Genre tidak dikenal"
 
-data class Song(val id:Long,val title:String,val artist:String,val album:String,val genre:String,val dur:Long,val folder:String?){
- val uri get()=ContentUris.withAppendedId(M.EXTERNAL_CONTENT_URI,id)
+/** [web] = id video YouTube bila lagu berasal dari mode streaming; [thumb] = url cover online. */
+data class Song(val id:Long,val title:String,val artist:String,val album:String,val genre:String,val dur:Long,val folder:String?,
+ val web:String?=null,val thumb:String?=null){
+ val uri:Uri get()=if(web!=null)Uri.parse("yt://$web") else ContentUris.withAppendedId(M.EXTERNAL_CONTENT_URI,id)
 }
-fun Song.item()=MediaItem.Builder().setMediaId(id.toString()).setUri(uri)
- .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setArtist(artist).setAlbumTitle(album).build()).build()
+/** id lagu online: hash 64-bit dari id video, selalu negatif supaya tidak bentrok dengan id MediaStore */
+fun ytId(video:String):Long{
+ var h=-3750763034362895579L
+ for(ch in "yt:$video"){h=h xor ch.code.toLong();h*=1099511628211L}
+ return h or Long.MIN_VALUE
+}
+fun Song.item():MediaItem{
+ val md=MediaMetadata.Builder().setTitle(title).setArtist(artist).setAlbumTitle(album)
+ if(thumb!=null)md.setArtworkUri(Uri.parse(thumb))
+ return MediaItem.Builder().setMediaId(id.toString()).setUri(uri).setMediaMetadata(md.build()).build()
+}
 
 /**
  * Folder sumber musik pilihan pengguna. Disimpan sebagai id dokumen SAF (mis. "primary:Music/Rock").
@@ -112,8 +123,15 @@ object Covers{
   cache.get(s.id)?.let{return it}
   if(s.id in none)return null
   return sem.withPermit{withContext(Dispatchers.IO){
-   try{c.contentResolver.loadThumbnail(s.uri,Size(px,px),null).also{cache.put(s.id,it)}}
-   catch(e:Exception){none.add(s.id);null}
+   try{
+    val b=if(s.thumb!=null){
+     val cn=URL(s.thumb).openConnection() as HttpURLConnection
+     cn.connectTimeout=8000;cn.readTimeout=8000
+     val raw=cn.inputStream.use{android.graphics.BitmapFactory.decodeStream(it)}?:error("thumb")
+     if(raw.width>px&&raw.height>px){val k=px.toFloat()/minOf(raw.width,raw.height);Bitmap.createScaledBitmap(raw,(raw.width*k).toInt(),(raw.height*k).toInt(),true)} else raw
+    }else c.contentResolver.loadThumbnail(s.uri,Size(px,px),null)
+    b.also{cache.put(s.id,it)}
+   }catch(e:Exception){none.add(s.id);null}
   }}
  }
 }
@@ -125,7 +143,7 @@ class Playlists(c:Context){
  private fun save()=sp.edit().putString("d",JSONObject(map.mapValues{JSONArray(it.value)}).toString()).apply()
  fun create(n:String){ if(n.isNotBlank()&&n !in map){map[n]=emptyList();save()} }
  fun delete(n:String){map.remove(n);save()}
- fun add(n:String,id:Long){ val l=map[n].orEmpty(); if(id !in l){map[n]=l+id;save()} }
+ fun add(n:String,id:Long){ if(id<0)Online.persist(id); val l=map[n].orEmpty(); if(id !in l){map[n]=l+id;save()} }
  fun remove(n:String,id:Long){map[n]=map[n].orEmpty()-id;save()}
 }
 

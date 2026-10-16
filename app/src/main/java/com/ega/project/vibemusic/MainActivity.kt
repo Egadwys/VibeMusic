@@ -331,6 +331,9 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  
  LaunchedEffect(Unit){ appSp.edit().remove("selected_folder_uri").apply() }
  // sebelum pengguna memilih folder untuk pertama kali, perpustakaan dikosongkan dulu (dialog pilihan folder tampil)
+ remember{Online.init(c)}
+ // mode streaming YouTube: saklar di pengaturan; bila aktif, tab YouTube muncul di navbar
+ var ytOn by remember{mutableStateOf(appSp.getBoolean("yt_enabled",false))}
  var songs by remember{mutableStateOf(if(Folders.prompted(c))loadSongs(c) else emptyList())}
  var folders by remember{mutableStateOf(Folders.get(c))}
  var reloadKey by remember{mutableIntStateOf(0)}
@@ -384,12 +387,13 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
   if(stayAwake)StayAwake.show(c) else StayAwake.hide(c)
   onDispose{StayAwake.hide(c)}
  }
- var tab by remember{mutableIntStateOf(appSp.getInt("tab", 0))}
+ var tab by remember{mutableIntStateOf(appSp.getInt("tab", 0).let{if(it>=(if(ytOn)5 else 4))0 else it})}
  var detail by remember{mutableStateOf<String?>(appSp.getString("detail", null))}
- val pagerState = rememberPagerState(initialPage = tab) { 4 }
+ val pagerState = rememberPagerState(initialPage = tab) { if(ytOn)5 else 4 }
 
  LaunchedEffect(tab, detail) { appSp.edit().putInt("tab", tab).putString("detail", detail).apply() }
  val scope = rememberCoroutineScope()
+ val ytState = remember{YtState(scope)}
  var navTarget by remember{mutableStateOf<Int?>(null)}
  var navJob by remember{mutableStateOf<Job?>(null)}
  // swipe -> update tab (diabaikan selama perpindahan dari tap navbar sedang berjalan)
@@ -466,7 +470,7 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  
  LaunchedEffect(ctrl){while(true){pos.value=ctrl?.currentPosition?:0L;delay(250)}}
 
- val byId=remember(songs){songs.associateBy{it.id}}
+ val byId=remember(songs,Online.version){songs.associateBy{it.id}+Online.saved}
  
  LaunchedEffect(ctrl) {
   val p = ctrl ?: return@LaunchedEffect
@@ -507,10 +511,13 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
    animate(sheetP,target,vel,spring(dampingRatio=0.9f,stiffness=Spring.StiffnessMedium)){v,_->sheetP=v.coerceIn(0f,1f)}
   }
  }
+ // saklar YouTube dimatikan saat sedang di tab YouTube -> pindah ke Home
+ LaunchedEffect(ytOn){if(!ytOn&&tab==4)selectTab(0)}
  BackHandler(expanded||searching||detail!=null){if(expanded)animateSheet(0f) else if(searching){searching=false;query=""} else detail=null}
  fun play(l:List<Song>,i:Int){
   // simpan antrean agar bisa dipulihkan setelah aplikasi ditutup
   appSp.edit().putString("queue",l.joinToString(","){it.id.toString()}).apply()
+  l.forEach{if(it.id<0)Online.persist(it)}
   ctrl?.run{setMediaItems(l.map{it.item()},i,0L);prepare();play()}
  }
  // antrean bisa diubah (tambah/hapus), jadi daftar id disimpan ulang dari isi player
@@ -521,11 +528,13 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  fun playNext(s:Song){
   val p=ctrl?:return
   if(p.mediaItemCount==0){play(listOf(s),0);return}
+  if(s.id<0)Online.persist(s)
   p.addMediaItem(p.currentMediaItemIndex+1,s.item());saveQueue()
  }
  fun enqueue(s:Song){
   val p=ctrl?:return
   if(p.mediaItemCount==0){play(listOf(s),0);return}
+  if(s.id<0)Online.persist(s)
   p.addMediaItem(s.item());saveQueue()
  }
  val cur=remember(byId,nowId){nowId?.toLongOrNull()?.let{byId[it]}}
@@ -538,7 +547,7 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  // geser naik: buka pemutar, geser turun: tutup (mengikuti jari)
  val dragMod = Modifier.draggable(dragState, Orientation.Vertical, enabled = cur!=null,
   onDragStarted = { sheetJob?.cancel() }, onDragStopped = { settle(it) })
- val tabTitles=listOf("Home","Album","Artis","Playlist")
+ val tabTitles=listOf("Home","Album","Artis","Playlist","YouTube")
  var showSong by remember{mutableStateOf(false)}
  LaunchedEffect(nowId,playing){
   if(playing&&nowId!=null){showSong=true;delay(2000);showSong=false} else showSong=false
@@ -569,14 +578,14 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
      if(searching){
       if(query.isNotEmpty())IconButton({tick();query=""}){Icon(Icons.Default.Close,null)}
      } else {
-      IconButton({tick();searching=true}){Icon(Icons.Default.Search,null)}
+      if(!(ytOn&&tab==4))IconButton({tick();searching=true}){Icon(Icons.Default.Search,null)}
       IconButton({tick();showSettings=true}){Icon(Icons.Default.Settings,"Pengaturan")}
      }
     }
    )
   },
   containerColor=Color.Transparent,
-  bottomBar={FloatingNav(tab,cur,playing,pos,ctrl,dragMod){selectTab(it)}}){pad->
+  bottomBar={FloatingNav(tab,ytOn,cur,playing,pos,ctrl,dragMod){selectTab(it)}}){pad->
   
   if(searching){
    val q=query.trim()
@@ -609,7 +618,8 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
      0->HomeTab(byFolder){detail="f:$it"}
      1->Groups(byAlbum){detail="a:$it"}
      2->Groups(byArtist){detail="r:$it"}
-     else->PlaylistTab(pl,byId){detail="p:$it"}
+     3->PlaylistTab(pl,byId){detail="p:$it"}
+     else->YtTab(ytState,nowId,pl,{l,i->play(l,i)},{playNext(it)},{enqueue(it)})
     }
    }
   }
@@ -665,20 +675,23 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
   confirmButton={TextButton({tick();showFirstRun=false;folderPicker.launch(null)}){Text("Pilih folder")}},
   dismissButton={TextButton({tick();showFirstRun=false;Folders.markPrompted(c);reloadSongs()}){Text("Pindai semua folder")}}
  )
- if(showSettings)SettingsDialog(mode,onMode,folders,{folderPicker.launch(null)},{Folders.remove(c,it);reloadSongs()},{Folders.clear(c);reloadSongs()},{showSettings=false})
+ if(showSettings)SettingsDialog(mode,onMode,ytOn,{on->ytOn=on;appSp.edit().putBoolean("yt_enabled",on).apply()},folders,{folderPicker.launch(null)},{Folders.remove(c,it);reloadSongs()},{Folders.clear(c);reloadSongs()},{showSettings=false})
  }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable fun FloatingNav(tab:Int,cur:Song?,playing:Boolean,pos:State<Long>,ctrl:MediaController?,dragMod:Modifier,onSelect:(Int)->Unit){
- val items=listOf("Home" to Icons.Default.Home,"Album" to Icons.Default.Album,"Artis" to Icons.Default.Person,"Playlist" to Icons.AutoMirrored.Filled.QueueMusic)
+@Composable fun FloatingNav(tab:Int,yt:Boolean,cur:Song?,playing:Boolean,pos:State<Long>,ctrl:MediaController?,dragMod:Modifier,onSelect:(Int)->Unit){
+ val items=listOf("Home" to Icons.Default.Home,"Album" to Icons.Default.Album,"Artis" to Icons.Default.Person,"Playlist" to Icons.AutoMirrored.Filled.QueueMusic)+
+  (if(yt)listOf("YouTube" to Icons.Default.PlayCircle) else emptyList())
+ // dengan 5 ikon, tombol dan margin dikecilkan agar muat di layar sempit
+ val iw=if(yt)44.dp else 56.dp
  val tick=rememberTick()
- Box(dragMod.fillMaxWidth().navigationBarsPadding().padding(horizontal=24.dp,vertical=12.dp),contentAlignment=Alignment.Center){
+ Box(dragMod.fillMaxWidth().navigationBarsPadding().padding(horizontal=if(yt)16.dp else 24.dp,vertical=12.dp),contentAlignment=Alignment.Center){
   Surface(shape=RoundedCornerShape(50),color=MaterialTheme.colorScheme.surfaceContainerHigh,tonalElevation=0.dp,shadowElevation=10.dp){
    Row(Modifier.animateContentSize().padding(8.dp),horizontalArrangement=Arrangement.spacedBy(4.dp),verticalAlignment=Alignment.CenterVertically){
     items.forEachIndexed{i,(t,ic)->
      val sel=tab==i
-     Box(Modifier.width(56.dp).height(48.dp).clip(CircleShape)
+     Box(Modifier.width(iw).height(48.dp).clip(CircleShape)
       .background(if(sel)MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
       .clickable{tick();onSelect(i)},contentAlignment=Alignment.Center){
       Icon(ic,t,tint=if(sel)MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -964,7 +977,7 @@ const val QUEUE_WIDTH_FRACTION=0.75f
  * Pengaturan (popup): baris 1 = folder sumber musik (bisa lebih dari satu), baris 2 = tema,
  * baris terakhir = kredit aplikasi.
  */
-@Composable fun SettingsDialog(mode:Int,onMode:(Int)->Unit,folders:List<String>,onAddFolder:()->Unit,onRemoveFolder:(String)->Unit,onAllFolders:()->Unit,onDismiss:()->Unit){
+@Composable fun SettingsDialog(mode:Int,onMode:(Int)->Unit,ytOn:Boolean,onYt:(Boolean)->Unit,folders:List<String>,onAddFolder:()->Unit,onRemoveFolder:(String)->Unit,onAllFolders:()->Unit,onDismiss:()->Unit){
  val c=LocalContext.current
  val tick=rememberTick()
  val appName=remember{c.applicationInfo.loadLabel(c.packageManager).toString()}
@@ -988,6 +1001,17 @@ const val QUEUE_WIDTH_FRACTION=0.75f
     FilledTonalButton({tick();onAddFolder()}){Icon(Icons.Default.Add,null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp));Text("Tambah folder")}
     if(folders.isNotEmpty())TextButton({tick();onAllFolders()}){Text("Pindai semua")}
    }
+   HorizontalDivider(Modifier.padding(vertical=16.dp))
+   // 1b. streaming YouTube
+   Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+    Column(Modifier.weight(1f)){
+     Text("Streaming YouTube",style=MaterialTheme.typography.titleSmall)
+     Text("Menambah tab YouTube di navbar untuk mencari dan memutar lagu online",style=MaterialTheme.typography.bodySmall,color=sub)
+    }
+    Switch(ytOn,{tick();onYt(it)})
+   }
+   if(ytOn)Text("Memakai ekstraktor tidak resmi: bisa berhenti bekerja sewaktu-waktu dan tidak sesuai syarat layanan YouTube.",
+    style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.error,modifier=Modifier.padding(top=6.dp))
    HorizontalDivider(Modifier.padding(vertical=16.dp))
    // 2. tema
    Text("Tema",style=MaterialTheme.typography.titleSmall)
