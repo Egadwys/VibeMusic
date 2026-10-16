@@ -97,14 +97,16 @@ data class YtPl(val title:String,val by:String,val url:String,val thumb:String?)
  fun asSong()=Song(ytId("pl:$url"),title,by,UB,UG,0L,null,null,thumb)
 }
 /** Kategori di halaman utama YouTube. Ubah [q] untuk mengganti isi; [playlist]=true mengambil playlist teratas dari hasil pencarian. */
-class YtSection(val title:String,val q:String,val playlist:Boolean)
+/** [exclude] = judul kategori lain; lagu yang sudah ada di kategori itu tidak ditampilkan lagi di sini. */
+class YtSection(val title:String,val q:String,val playlist:Boolean,val exclude:String?=null)
 
 object Yt{
  const val UA="Mozilla/5.0 (Windows NT 10.0; rv:128.0) Gecko/20100101 Firefox/128.0"
  val SECTIONS=listOf(
-  YtSection("Top Indonesia","Top 50 Indonesia",true),
-  YtSection("Top Internasional","Top 50 Global",true),
-  YtSection("Trending","Trending music",true)
+  YtSection("Top Indonesia","Top 50 Indonesia",true),   // wilayah Indonesia
+  // lagu internasional di luar Indonesia: lagu yang sudah masuk Top Indonesia disaring keluar
+  YtSection("Top Internasional","Top international songs 2026",true,exclude="Top Indonesia"),
+  YtSection("Trending","Trending music Indonesia",true)
  )
  private val ready by lazy{NewPipe.init(NpDownloader(),Localization("id","ID"),ContentCountry("ID"));true}
  private val svc get()=ServiceList.YouTube
@@ -153,6 +155,14 @@ object Yt{
    }
   }
   return songs(s.q).take(50)
+ }
+
+ private val junk=Regex("""\s*[(\[][^)\]]*(official|video|audio|lyric|lirik|\bmv\b|m/v|\bhd\b|4k|visuali[sz]er|clip)[^)\]]*[)\]]""",RegexOption.IGNORE_CASE)
+ /** judul YouTube -> judul bersih untuk pencarian lirik: buang "(Official Video)", "[Lyric]", awalan "Artis - " dll. */
+ fun cleanTitle(t:String,artist:String):String{
+  var r=t.replace(junk,"").substringBefore(" | ").trim()
+  if(r.startsWith("$artist - ",true))r=r.substring(artist.length+3).trim()
+  return r.ifBlank{t}
  }
 
  private val urls=ConcurrentHashMap<String,Pair<String,Long>>()

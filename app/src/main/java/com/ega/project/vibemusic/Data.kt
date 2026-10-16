@@ -161,7 +161,32 @@ object Lyrics{
 
  private fun file(c:Context,s:Song):java.io.File{
   val dir=java.io.File(c.filesDir,"lyrics");dir.mkdirs()
-  return java.io.File(dir,"${s.id}.lrc")
+  // lagu online memakai nama berkas sendiri (berkas lama bisa berisi hasil kosong dari pencarian yang dulu gagal)
+  return java.io.File(dir,if(s.web!=null)"yt_${s.id}.lrc" else "${s.id}.lrc")
+ }
+
+ /** Cari lirik tersinkron lagu online di LRCLIB. null = tidak ada yang cocok. Melempar IOException bila server/jaringan bermasalah. */
+ private fun searchOnline(s:Song):String?{
+  fun e(x:String)=URLEncoder.encode(x,"UTF-8")
+  val title=Yt.cleanTitle(s.title,s.artist)
+  val urls=listOf("https://lrclib.net/api/search?track_name=${e(title)}&artist_name=${e(s.artist)}",
+   "https://lrclib.net/api/search?q=${e("${s.artist} $title")}")
+  for(u in urls){
+   val cn=URL(u).openConnection() as HttpURLConnection
+   cn.setRequestProperty("User-Agent","VibeMusic/1.0");cn.connectTimeout=8000;cn.readTimeout=8000
+   if(cn.responseCode!=200)throw java.io.IOException("LRCLIB ${cn.responseCode}")
+   val a=JSONArray(cn.inputStream.bufferedReader().readText())
+   var best:String?=null;var bd=Double.MAX_VALUE
+   for(i in 0 until a.length()){
+    val o=a.getJSONObject(i)
+    val sl=o.optString("syncedLyrics")
+    if(sl.isBlank()||sl=="null")continue
+    val d=Math.abs(o.optDouble("duration",0.0)-s.dur/1000.0)
+    if(d<bd){bd=d;best=sl}
+   }
+   if(best!=null&&bd<=8.0)return best
+  }
+  return null
  }
 
  suspend fun get(c:Context,s:Song):List<Line> = mem[s.id]?:withContext(Dispatchers.IO){
@@ -172,7 +197,15 @@ object Lyrics{
    if(txt.isNotBlank()||System.currentTimeMillis()-f.lastModified()<RETRY_MS)
     return@withContext parse(txt).also{mem[s.id]=it}
   }
-  // 2) ambil dari LRCLIB lalu simpan
+  // 2a) lagu YouTube: album tidak diketahui, jadi /get tidak cocok -> cari lewat /search dan pilih yang durasinya paling dekat
+  if(s.web!=null){
+   return@withContext try{
+    val t=searchOnline(s)?:""
+    runCatching{f.writeText(t)}
+    parse(t).also{mem[s.id]=it}
+   }catch(e:Exception){emptyList()}   // galat jaringan/server: tidak disimpan, dicoba lagi nanti
+  }
+  // 2b) ambil dari LRCLIB lalu simpan
   try{
    fun e(x:String)=URLEncoder.encode(x,"UTF-8")
    val u="https://lrclib.net/api/get?track_name=${e(s.title)}&artist_name=${e(s.artist)}&album_name=${e(s.album)}&duration=${s.dur/1000}"
