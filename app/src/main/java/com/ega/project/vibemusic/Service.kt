@@ -53,6 +53,7 @@ class PlaybackService:MediaSessionService(){
  override fun onCreate(){
   super.onCreate()
   prefs().edit().remove("sleep_end").apply()
+  Yt.init(this)
   // Renderer audio dengan SpectrumSink: audio tidak diubah, hanya dibaca untuk visualizer
   val renderers=RenderersFactory{handler,_,audioListener,_,_->
    arrayOf<Renderer>(MediaCodecAudioRenderer(this@PlaybackService,MediaCodecSelector.DEFAULT,handler,audioListener,

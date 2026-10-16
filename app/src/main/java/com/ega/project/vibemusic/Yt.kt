@@ -100,6 +100,9 @@ data class YtPl(val title:String,val by:String,val url:String,val thumb:String?)
 /** [exclude] = judul kategori lain; lagu yang sudah ada di kategori itu tidak ditampilkan lagi di sini. */
 class YtSection(val title:String,val q:String,val playlist:Boolean,val exclude:String?=null)
 
+/** detail stream audio yang sedang dipakai untuk satu video (ditampilkan di kartu info lagu) */
+data class StreamMeta(val format:String,val mime:String?,val kbps:Int,val codec:String?,val hz:Int,val max:Boolean)
+
 object Yt{
  const val UA="Mozilla/5.0 (Windows NT 10.0; rv:128.0) Gecko/20100101 Firefox/128.0"
  val SECTIONS=listOf(
@@ -166,15 +169,27 @@ object Yt{
  }
 
  private val urls=ConcurrentHashMap<String,Pair<String,Long>>()
+ @Volatile private var sp:SharedPreferences?=null
+ private val metas=ConcurrentHashMap<String,StreamMeta>()
+ private fun qKey(video:String,max:Boolean)="$video|${if(max)"max" else "std"}"
+ /** detail stream yang dipakai (sesuai pengaturan kualitas saat ini); null bila lagu belum pernah dibuka */
+ fun streamMeta(video:String):StreamMeta?=metas[qKey(video,sp?.getBoolean("yt_max_quality",false)==true)]
+ /** dibaca dari prefs "AppState" (kunci yt_max_quality) setiap kali url dibuka, jadi perubahan di pengaturan langsung berlaku untuk lagu berikutnya */
+ fun init(c:Context){if(sp==null)sp=c.applicationContext.getSharedPreferences("AppState",Context.MODE_PRIVATE)}
  /** url audio langsung (blocking; dipanggil dari thread loader ExoPlayer). Url YouTube kedaluwarsa, jadi di-cache 4 jam. */
  fun streamUrl(video:String):String{
-  urls[video]?.let{if(it.second>System.currentTimeMillis())return it.first}
+  // true = ambil stream dengan bitrate terbesar (format apa pun, biasanya Opus); false = utamakan M4A/AAC
+  val max=sp?.getBoolean("yt_max_quality",false)==true
+  val key=qKey(video,max)
+  urls[key]?.let{if(it.second>System.currentTimeMillis())return it.first}
   ready
   val info=StreamInfo.getInfo(svc,"https://www.youtube.com/watch?v=$video")
   val a=info.audioStreams.filter{it.isUrl}
-  val best=a.filter{it.format==MediaFormat.M4A}.maxByOrNull{it.averageBitrate}?:a.maxByOrNull{it.averageBitrate}
+  val best=(if(max)a.maxByOrNull{it.averageBitrate}
+   else a.filter{it.format==MediaFormat.M4A}.maxByOrNull{it.averageBitrate}?:a.maxByOrNull{it.averageBitrate})
    ?:throw IOException("Tidak ada stream audio")
-  return best.content.also{urls[video]=it to System.currentTimeMillis()+4*3600_000L}
+  metas[key]=StreamMeta(best.format?.name?:"?",best.format?.mimeType,best.averageBitrate,best.itagItem?.codec,best.itagItem?.sampleRate?:0,max)
+  return best.content.also{urls[key]=it to System.currentTimeMillis()+4*3600_000L}
  }
 }
 

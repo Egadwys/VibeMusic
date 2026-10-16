@@ -331,9 +331,10 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  
  LaunchedEffect(Unit){ appSp.edit().remove("selected_folder_uri").apply() }
  // sebelum pengguna memilih folder untuk pertama kali, perpustakaan dikosongkan dulu (dialog pilihan folder tampil)
- remember{Online.init(c)}
+ remember{Online.init(c);Yt.init(c)}
  // mode streaming YouTube: saklar di pengaturan; bila aktif, tab YouTube muncul di navbar
  var ytOn by remember{mutableStateOf(appSp.getBoolean("yt_enabled",false))}
+ var ytMax by remember{mutableStateOf(appSp.getBoolean("yt_max_quality",false))}
  var songs by remember{mutableStateOf(if(Folders.prompted(c))loadSongs(c) else emptyList())}
  var folders by remember{mutableStateOf(Folders.get(c))}
  var reloadKey by remember{mutableIntStateOf(0)}
@@ -675,7 +676,7 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
   confirmButton={TextButton({tick();showFirstRun=false;folderPicker.launch(null)}){Text("Pilih folder")}},
   dismissButton={TextButton({tick();showFirstRun=false;Folders.markPrompted(c);reloadSongs()}){Text("Pindai semua folder")}}
  )
- if(showSettings)SettingsDialog(mode,onMode,ytOn,{on->ytOn=on;appSp.edit().putBoolean("yt_enabled",on).apply()},folders,{folderPicker.launch(null)},{Folders.remove(c,it);reloadSongs()},{Folders.clear(c);reloadSongs()},{showSettings=false})
+ if(showSettings)SettingsDialog(mode,onMode,ytOn,{on->ytOn=on;appSp.edit().putBoolean("yt_enabled",on).apply()},ytMax,{m->ytMax=m;appSp.edit().putBoolean("yt_max_quality",m).apply()},folders,{folderPicker.launch(null)},{Folders.remove(c,it);reloadSongs()},{Folders.clear(c);reloadSongs()},{showSettings=false})
  }
 }
 
@@ -721,8 +722,10 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  Row(Modifier.fillMaxWidth(),Arrangement.SpaceBetween){Text(fmt(p));Text(fmt(dur))}
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable fun Now(s:Song,ctrl:MediaController?,playing:Boolean,pos:State<Long>,shuffle:Boolean,repeat:Int,visible:Boolean,overlay:Boolean,dragMod:Modifier,stayAwake:Boolean,onStayAwake:()->Unit,sleepEnd:Long,onSleep:()->Unit,onEq:()->Unit,onLyrics:()->Unit,close:()->Unit){
  var lines by remember(s.id){mutableStateOf<List<Line>?>(null)}
+ var showInfo by remember{mutableStateOf(false)}   // tekan lama cover = kartu info metadata lagu
  val ctx=LocalContext.current
  LaunchedEffect(s.id){lines=Lyrics.get(ctx,s)}
  val idx by remember(s.id){derivedStateOf{lines?.indexOfLast{it.ms<=pos.value}?:-1}}
@@ -746,7 +749,7 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
     // tekan cover = aktif/nonaktifkan stay awake. Border cover selalu tampil dengan tampilan yang sama, tidak terikat status stay awake
     @Composable fun CoverArt(size:Dp){
      Box(Modifier.size(size).shadow(5.dp,CircleShape,clip=false,ambientColor=Color.Black.copy(alpha=0.6f),spotColor=Color.Black.copy(alpha=0.6f))
-      .clip(CircleShape).clickable{tick();onStayAwake()}
+      .clip(CircleShape).combinedClickable(onClick={tick();onStayAwake()},onLongClick={tick();showInfo=true})
       .border(3.dp,on,CircleShape)){
       Cover(s, Modifier.fillMaxSize(), shape = CircleShape, px = 700, zoom = 1.12f)
      }
@@ -829,6 +832,8 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
   LaunchedEffect(sleepActive){while(sleepActive){nowMs=System.currentTimeMillis();delay(1000)}}
   Row(Modifier.align(Alignment.TopStart).statusBarsPadding().padding(4.dp),verticalAlignment=Alignment.CenterVertically){
    IconButton({tick();close()}){Icon(Icons.Default.KeyboardArrowDown,null)}
+   // stay awake aktif: ikon mata di samping panah bawah
+   if(stayAwake){Icon(Icons.Default.Visibility,"Stay awake aktif",Modifier.size(18.dp),tint=on);Spacer(Modifier.width(8.dp))}
    if(sleepActive){
     Icon(Icons.Default.Timer,null,Modifier.size(16.dp),tint=on);Spacer(Modifier.width(4.dp))
     Text(if(sleepEnd<0)"Akhir lagu" else fmt((sleepEnd-nowMs).coerceAtLeast(0L)),style=MaterialTheme.typography.labelLarge,color=on)
@@ -846,6 +851,7 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
     Icon(Icons.Default.GraphicEq,"Ganti visualizer",tint=if(vizOff)LocalContentColor.current.copy(alpha=0.4f) else LocalContentColor.current)
    }
   }
+  if(showInfo)SongInfoCard(s){showInfo=false}
  }}
 }
 
@@ -977,7 +983,8 @@ const val QUEUE_WIDTH_FRACTION=0.75f
  * Pengaturan (popup): baris 1 = folder sumber musik (bisa lebih dari satu), baris 2 = tema,
  * baris terakhir = kredit aplikasi.
  */
-@Composable fun SettingsDialog(mode:Int,onMode:(Int)->Unit,ytOn:Boolean,onYt:(Boolean)->Unit,folders:List<String>,onAddFolder:()->Unit,onRemoveFolder:(String)->Unit,onAllFolders:()->Unit,onDismiss:()->Unit){
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable fun SettingsDialog(mode:Int,onMode:(Int)->Unit,ytOn:Boolean,onYt:(Boolean)->Unit,ytMax:Boolean,onYtMax:(Boolean)->Unit,folders:List<String>,onAddFolder:()->Unit,onRemoveFolder:(String)->Unit,onAllFolders:()->Unit,onDismiss:()->Unit){
  val c=LocalContext.current
  val tick=rememberTick()
  val appName=remember{c.applicationInfo.loadLabel(c.packageManager).toString()}
@@ -1010,15 +1017,32 @@ const val QUEUE_WIDTH_FRACTION=0.75f
     }
     Switch(ytOn,{tick();onYt(it)})
    }
+   if(ytOn){
+    Spacer(Modifier.height(12.dp))
+    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+     Column(Modifier.weight(1f)){
+      Text("Kualitas audio tertinggi",style=MaterialTheme.typography.titleSmall)
+      Text(if(ytMax)"Memakai stream dengan bitrate terbesar yang tersedia (biasanya Opus). Lebih boros kuota." else "Standar: utamakan AAC/M4A",style=MaterialTheme.typography.bodySmall,color=sub)
+     }
+     Switch(ytMax,{tick();onYtMax(it)})
+    }
+   }
    if(ytOn)Text("Memakai ekstraktor tidak resmi: bisa berhenti bekerja sewaktu-waktu dan tidak sesuai syarat layanan YouTube.",
     style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.error,modifier=Modifier.padding(top=6.dp))
    HorizontalDivider(Modifier.padding(vertical=16.dp))
    // 2. tema
    Text("Tema",style=MaterialTheme.typography.titleSmall)
    Spacer(Modifier.height(8.dp))
-   Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)){
-    listOf("Sistem","Terang","Gelap").forEachIndexed{i,t->
-     FilterChip(mode==i,{tick();onMode(i)},label={Text(t)})
+   val themes=listOf("Sistem","Terang","Gelap")
+   var themeOpen by remember{mutableStateOf(false)}
+   ExposedDropdownMenuBox(themeOpen,{themeOpen=it}){
+    OutlinedTextField(themes.getOrElse(mode){themes[0]},{},Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(),readOnly=true,singleLine=true,
+     trailingIcon={ExposedDropdownMenuDefaults.TrailingIcon(themeOpen)})
+    ExposedDropdownMenu(themeOpen,{themeOpen=false}){
+     themes.forEachIndexed{i,t->
+      DropdownMenuItem({Text(t)},{tick();onMode(i);themeOpen=false},
+       trailingIcon={if(mode==i)Icon(Icons.Default.Check,null,Modifier.size(18.dp))})
+     }
     }
    }
    HorizontalDivider(Modifier.padding(vertical=16.dp))

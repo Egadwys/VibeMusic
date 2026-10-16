@@ -124,12 +124,8 @@ object Covers{
   if(s.id in none)return null
   return sem.withPermit{withContext(Dispatchers.IO){
    try{
-    val b=if(s.thumb!=null){
-     val cn=URL(s.thumb).openConnection() as HttpURLConnection
-     cn.connectTimeout=8000;cn.readTimeout=8000
-     val raw=cn.inputStream.use{android.graphics.BitmapFactory.decodeStream(it)}?:error("thumb")
-     if(raw.width>px&&raw.height>px){val k=px.toFloat()/minOf(raw.width,raw.height);Bitmap.createScaledBitmap(raw,(raw.width*k).toInt(),(raw.height*k).toInt(),true)} else raw
-    }else c.contentResolver.loadThumbnail(s.uri,Size(px,px),null)
+    val b=if(s.web!=null||s.thumb!=null)Art.load(c,s,px)?:error("thumb")
+     else Art.embedded(c,s,px)?:c.contentResolver.loadThumbnail(s.uri,Size(px,px),null)   // lagu lokal: cover di metadata dulu, baru thumbnail MediaStore
     b.also{cache.put(s.id,it)}
    }catch(e:Exception){none.add(s.id);null}
   }}
