@@ -9,7 +9,11 @@ import android.widget.RemoteViews
 import androidx.media3.common.*
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.RenderersFactory
 import androidx.media3.exoplayer.audio.DefaultAudioSink
@@ -49,6 +53,7 @@ class PlaybackService:MediaSessionService(){
  override fun onCreate(){
   super.onCreate()
   prefs().edit().remove("sleep_end").apply()
+  Yt.init(this)
   // Renderer audio dengan SpectrumSink: audio tidak diubah, hanya dibaca untuk visualizer
   val renderers=RenderersFactory{handler,_,audioListener,_,_->
    arrayOf<Renderer>(MediaCodecAudioRenderer(this@PlaybackService,MediaCodecSelector.DEFAULT,handler,audioListener,
@@ -56,7 +61,10 @@ class PlaybackService:MediaSessionService(){
   }
   // DIAGNOSA: ubah ke false untuk mematikan SpectrumSink (visualizer jadi animasi dekoratif)
   val useTap=true
-  val p=ExoPlayer.Builder(this,if(useTap)renderers else androidx.media3.exoplayer.DefaultRenderersFactory(this)).setAudioAttributes(AudioAttributes.DEFAULT,true).setHandleAudioBecomingNoisy(true).build()
+  // sumber media: file lokal tetap lewat DefaultDataSource; alamat yt://<id> diubah jadi url audio YouTube saat dibuka
+  val http=DefaultHttpDataSource.Factory().setUserAgent(Yt.UA).setAllowCrossProtocolRedirects(true).setConnectTimeoutMs(15000).setReadTimeoutMs(20000)
+  val sources=DefaultMediaSourceFactory(ResolvingDataSource.Factory(DefaultDataSource.Factory(this,http),YtResolver))
+  val p=ExoPlayer.Builder(this,if(useTap)renderers else androidx.media3.exoplayer.DefaultRenderersFactory(this)).setMediaSourceFactory(sources).setAudioAttributes(AudioAttributes.DEFAULT,true).setHandleAudioBecomingNoisy(true).build()
   exo=p
   p.addListener(object:Player.Listener{
    override fun onEvents(pl:Player,e:Player.Events){
