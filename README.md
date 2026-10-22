@@ -19,6 +19,8 @@ Pemutar musik offline untuk Android, dengan lirik tersinkron dan visualizer.
 - Sleep timer, equalizer, dan fade saat play/pause/pindah lagu
 - Widget layar utama dan kontrol di notifikasi
 - Material You, tema sistem / terang / gelap AMOLED
+- Opsional: streaming YouTube (daftar Trending 50 lagu di Home, tarik ke bawah untuk memuat ulang). Bila lagu gagal dimuat: diulang sekali, lalu lompat ke lagu berikutnya, lalu muncul popup masalah jaringan
+- Opsional: Glass effect di Pengaturan (navbar, kartu, pemutar, dan dialog tembus pandang; blur latar penuh di Android 12+)
 
 ## Build
 

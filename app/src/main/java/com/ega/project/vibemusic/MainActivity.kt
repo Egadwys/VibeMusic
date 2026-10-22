@@ -42,6 +42,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import android.view.WindowManager
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.BlendMode
@@ -114,10 +119,72 @@ class MainActivity:ComponentActivity(){
 }
 
 @Composable fun Root(){
- val sp=LocalContext.current.getSharedPreferences("s",0)
+ val c=LocalContext.current
+ val sp=c.getSharedPreferences("s",0)
+ val asp=c.getSharedPreferences("AppState",Context.MODE_PRIVATE)
  var mode by remember{mutableIntStateOf(sp.getInt("mode",0))}
- MusikTheme(mode){Surface(Modifier.fillMaxSize()){Perm{App(mode){m->mode=m;sp.edit().putInt("mode",m).apply()}}}}
+ var glass by remember{mutableStateOf(asp.getBoolean("glass_effect",false))}
+ CompositionLocalProvider(LocalGlass provides glass){
+  MusikTheme(mode){Surface(Modifier.fillMaxSize()){Perm{
+   App(mode,{m->mode=m;sp.edit().putInt("mode",m).apply()},glass){g->glass=g;asp.edit().putBoolean("glass_effect",g).apply()}
+  }}}
+ }
 }
+
+// ===================== GLASS EFFECT (pengaturan) =====================
+// Panel dibuat tembus pandang dengan tepi terang, di atas latar gradasi warna tema (layar utama) / cover yang di-blur (pemutar).
+// Blur latar sungguhan: pemutar dan dialog (Android 12+ saja). Di bawah itu tampil versi tembus pandang tanpa blur.
+val LocalGlass=compositionLocalOf{false}
+private val glassEdge=Brush.linearGradient(listOf(Color.White.copy(alpha=0.45f),Color.White.copy(alpha=0.06f)))
+
+@Composable fun glassColor(base:Color,alpha:Float=0.55f):Color=if(LocalGlass.current)base.copy(alpha=alpha) else base
+
+/** warna latar dialog: tembus pandang saat glass aktif */
+@Composable fun dlgColor():Color=
+ if(LocalGlass.current)MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha=0.72f) else AlertDialogDefaults.containerColor
+
+/** kartu kaca (dipakai di tile); tanpa efek bila glass mati */
+@Composable fun Modifier.glassCard(shape:Shape):Modifier{
+ if(!LocalGlass.current)return this
+ return this.background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha=0.35f),shape).border(1.dp,glassEdge,shape)
+}
+
+/** latar layar utama saat glass aktif: tiga gumpalan warna tema yang lembut */
+@Composable fun GlassBackdrop(){
+ val cs=MaterialTheme.colorScheme
+ val a=cs.primary;val b=cs.tertiary;val d=cs.secondary
+ Canvas(Modifier.fillMaxSize()){
+  fun blob(col:Color,cx:Float,cy:Float,r:Float){
+   drawCircle(Brush.radialGradient(listOf(col.copy(alpha=0.42f),col.copy(alpha=0f)),Offset(cx,cy),r),r,Offset(cx,cy))
+  }
+  blob(a,size.width*0.10f,size.height*0.10f,size.width*0.95f)
+  blob(b,size.width*0.98f,size.height*0.45f,size.width*0.85f)
+  blob(d,size.width*0.15f,size.height*0.90f,size.width*0.95f)
+ }
+}
+
+/** latar pemutar saat glass aktif: cover di-blur (Android 12+) atau gradasi warna tema, ditutup scrim agar teks tetap terbaca */
+@Composable fun GlassCoverBackdrop(s:Song){
+ val cs=MaterialTheme.colorScheme
+ Box(Modifier.fillMaxSize()){
+  if(Build.VERSION.SDK_INT>=31)Cover(s,Modifier.fillMaxSize().blur(56.dp).graphicsLayer(alpha=0.6f),shape=RectangleShape,px=240)
+  else GlassBackdrop()
+  Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(cs.surface.copy(alpha=0.25f),cs.surface.copy(alpha=0.7f)))))
+ }
+}
+
+/** blur latar di belakang jendela dialog (Android 12+, bila perangkat mengizinkan blur antar-jendela). Dipanggil di dalam isi dialog. */
+@Composable fun GlassDialogBlur(){
+ if(!LocalGlass.current||Build.VERSION.SDK_INT<31)return
+ val w=(LocalView.current.parent as? DialogWindowProvider)?.window?:return
+ SideEffect{
+  runCatching{
+   w.addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
+   val lp=w.attributes;lp.blurBehindRadius=40;w.attributes=lp
+  }
+ }
+}
+
 
 @Composable fun Perm(content:@Composable () -> Unit){
  val c=LocalContext.current
@@ -273,7 +340,7 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
 @Composable fun Tile(cover:Song?,title:String,sub:String,menu:List<Pair<String,()->Unit>> = emptyList(),active:Boolean=false,onClick:()->Unit){
  var m by remember{mutableStateOf(false)}
  val tick=rememberTick()
- Column(Modifier.clip(RoundedCornerShape(14.dp)).clickable(onClick={tick();onClick()}).padding(4.dp)){
+ Column(Modifier.clip(RoundedCornerShape(14.dp)).glassCard(RoundedCornerShape(14.dp)).clickable(onClick={tick();onClick()}).padding(4.dp)){
   Cover(cover,Modifier.fillMaxWidth())
   Row(verticalAlignment=Alignment.CenterVertically){
    Column(Modifier.weight(1f).padding(top=6.dp)){
@@ -305,8 +372,30 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  Grid(keys,{it}){_,k->Tile(pick[k],k,"${g.getValue(k).size} lagu"){open(k)}}
 }
 
-@Composable fun HomeTab(g:Map<String,List<Song>>,open:(String)->Unit){
- if(g.isEmpty())Box(Modifier.fillMaxSize(),Alignment.Center){Text("Tidak ada lagu di folder ini")} else Groups(g,open)
+/** kunci detail untuk daftar YouTube Trending di Home (tampil sebagai tile pertama di grid selama streaming YouTube aktif) */
+const val YT_DETAIL="y:YouTube Trending"
+
+/**
+ * Home = grid folder. Bila streaming YouTube aktif ([yt] != null), tile pertama selalu daftar YouTube Trending,
+ * dan tarik ke bawah (swipe down) memuat ulang daftar itu.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable fun HomeTab(g:Map<String,List<Song>>,yt:YtState?,open:(String)->Unit,openYt:()->Unit){
+ if(yt==null&&g.isEmpty()){Box(Modifier.fillMaxSize(),Alignment.Center){Text("Tidak ada lagu di folder ini")};return}
+ val keys=remember(g){g.keys.sorted()}
+ val pick=remember(g){g.mapValues{it.value.random()}}
+ val items=if(yt!=null)listOf(YT_DETAIL)+keys else keys
+ val grid:@Composable ()->Unit={
+  Grid(items,{it}){_,k->
+   if(k==YT_DETAIL&&yt!=null){
+    val l=yt.trending
+    Tile(l.firstOrNull(),"YouTube Trending",when{l.isNotEmpty()->"${l.size} lagu";yt.busy->"Memuat…";else->"Gagal memuat · ketuk untuk coba lagi"}){
+     if(l.isEmpty())yt.loadTrending(true) else openYt()
+    }
+   } else Tile(pick[k],k,"${g.getValue(k).size} lagu"){open(k)}
+  }
+ }
+ if(yt!=null)PullToRefreshBox(isRefreshing=yt.busy,onRefresh={yt.loadTrending(true)},modifier=Modifier.fillMaxSize()){grid()} else grid()
 }
 
 @Composable fun PlaylistTab(pl:Playlists,byId:Map<Long,Song>,open:(String)->Unit){
@@ -319,18 +408,22 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
    Tile(ids.firstNotNullOfOrNull{byId[it]},n,"${ids.size} lagu",listOf("Hapus" to {pl.delete(n)})){open(n)}
   }
  }
- if(dlg)AlertDialog(onDismissRequest={dlg=false},confirmButton={TextButton({pl.create(name.trim());name="";dlg=false}){Text("Buat")}},
+ if(dlg)AlertDialog(containerColor=dlgColor(),onDismissRequest={dlg=false},confirmButton={TextButton({pl.create(name.trim());name="";dlg=false}){Text("Buat")}},
   title={Text("Playlist baru")},text={OutlinedTextField(name,{name=it},singleLine=true,label={Text("Nama")})})
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
-@Composable fun App(mode:Int,onMode:(Int)->Unit){
+@Composable fun App(mode:Int,onMode:(Int)->Unit,glass:Boolean,onGlass:(Boolean)->Unit){
  val c=LocalContext.current
  val tick=rememberTick()
  val appSp = c.getSharedPreferences("AppState", Context.MODE_PRIVATE) 
  
  LaunchedEffect(Unit){ appSp.edit().remove("selected_folder_uri").apply() }
  // sebelum pengguna memilih folder untuk pertama kali, perpustakaan dikosongkan dulu (dialog pilihan folder tampil)
+ remember{Online.init(c);Yt.init(c)}
+ // mode streaming YouTube: saklar di pengaturan; bila aktif, daftar YouTube Trending muncul di Home
+ var ytOn by remember{mutableStateOf(appSp.getBoolean("yt_enabled",false))}
+ var ytMax by remember{mutableStateOf(appSp.getBoolean("yt_max_quality",false))}
  var songs by remember{mutableStateOf(if(Folders.prompted(c))loadSongs(c) else emptyList())}
  var folders by remember{mutableStateOf(Folders.get(c))}
  var reloadKey by remember{mutableIntStateOf(0)}
@@ -384,12 +477,13 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
   if(stayAwake)StayAwake.show(c) else StayAwake.hide(c)
   onDispose{StayAwake.hide(c)}
  }
- var tab by remember{mutableIntStateOf(appSp.getInt("tab", 0))}
+ var tab by remember{mutableIntStateOf(appSp.getInt("tab", 0).let{if(it>=4)0 else it})}
  var detail by remember{mutableStateOf<String?>(appSp.getString("detail", null))}
  val pagerState = rememberPagerState(initialPage = tab) { 4 }
 
  LaunchedEffect(tab, detail) { appSp.edit().putInt("tab", tab).putString("detail", detail).apply() }
  val scope = rememberCoroutineScope()
+ val ytState = remember{YtState(scope)}
  var navTarget by remember{mutableStateOf<Int?>(null)}
  var navJob by remember{mutableStateOf<Job?>(null)}
  // swipe -> update tab (diabaikan selama perpindahan dari tap navbar sedang berjalan)
@@ -466,7 +560,7 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  
  LaunchedEffect(ctrl){while(true){pos.value=ctrl?.currentPosition?:0L;delay(250)}}
 
- val byId=remember(songs){songs.associateBy{it.id}}
+ val byId=remember(songs,Online.version){songs.associateBy{it.id}+Online.saved}
  
  LaunchedEffect(ctrl) {
   val p = ctrl ?: return@LaunchedEffect
@@ -507,10 +601,15 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
    animate(sheetP,target,vel,spring(dampingRatio=0.9f,stiffness=Spring.StiffnessMedium)){v,_->sheetP=v.coerceIn(0f,1f)}
   }
  }
+  LaunchedEffect(ytOn){
+  // streaming aktif -> muat daftar Trending; dimatikan saat daftarnya sedang dibuka -> kembali ke Home
+  if(ytOn)ytState.loadTrending() else if(detail?.startsWith("y:")==true)detail=null
+ }
  BackHandler(expanded||searching||detail!=null){if(expanded)animateSheet(0f) else if(searching){searching=false;query=""} else detail=null}
  fun play(l:List<Song>,i:Int){
   // simpan antrean agar bisa dipulihkan setelah aplikasi ditutup
   appSp.edit().putString("queue",l.joinToString(","){it.id.toString()}).apply()
+  l.forEach{if(it.id<0)Online.persist(it)}
   ctrl?.run{setMediaItems(l.map{it.item()},i,0L);prepare();play()}
  }
  // antrean bisa diubah (tambah/hapus), jadi daftar id disimpan ulang dari isi player
@@ -521,11 +620,13 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  fun playNext(s:Song){
   val p=ctrl?:return
   if(p.mediaItemCount==0){play(listOf(s),0);return}
+  if(s.id<0)Online.persist(s)
   p.addMediaItem(p.currentMediaItemIndex+1,s.item());saveQueue()
  }
  fun enqueue(s:Song){
   val p=ctrl?:return
   if(p.mediaItemCount==0){play(listOf(s),0);return}
+  if(s.id<0)Online.persist(s)
   p.addMediaItem(s.item());saveQueue()
  }
  val cur=remember(byId,nowId){nowId?.toLongOrNull()?.let{byId[it]}}
@@ -549,6 +650,7 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  val byArtist=remember(songs){songs.groupBy{it.artist}}
 
  Box(Modifier.fillMaxSize().onSizeChanged{ hPx = it.height.toFloat() }){
+  if(glass)GlassBackdrop()
   Scaffold(topBar={
    TopAppBar(
     title={
@@ -572,7 +674,8 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
       IconButton({tick();searching=true}){Icon(Icons.Default.Search,null)}
       IconButton({tick();showSettings=true}){Icon(Icons.Default.Settings,"Pengaturan")}
      }
-    }
+    },
+    colors=if(glass)TopAppBarDefaults.topAppBarColors(containerColor=Color.Transparent,scrolledContainerColor=Color.Transparent) else TopAppBarDefaults.topAppBarColors()
    )
   },
   containerColor=Color.Transparent,
@@ -595,18 +698,28 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
    val d = detail!!
    val n=d.drop(2)
    val ids=if(d[0]=='p')pl.map[n] else null
-   val list=remember(d,songs,ids){when(d[0]){
+   val yt=ytState.trending
+   val list=remember(d,songs,ids,yt){when(d[0]){
     'f'->songs.filter{it.folder==n};'a'->songs.filter{it.album==n};'r'->songs.filter{it.artist==n}
+    'y'->yt
     else->ids.orEmpty().mapNotNull{byId[it]}}}
    Box(Modifier.padding(top=pad.calculateTopPadding()).fillMaxSize().pointerInput(Unit){ 
     detectHorizontalDragGestures { _, dragAmount -> if (dragAmount > 40) detail = null }
    }) {
-    SongGrid(list,nowId,pl,if(d[0]=='p')n else null,{playNext(it)},{enqueue(it)}){play(list,it)}
+    if(d[0]=='y'){
+     // daftar YouTube: ketuk lagu = putar satu lagu saja (tanpa mengisi antrean); "Putar semua" mengantrekan seluruh daftar
+     Column(Modifier.fillMaxSize()){
+      if(list.isNotEmpty())FilledTonalButton({tick();play(list,0)},Modifier.padding(horizontal=12.dp)){
+       Icon(Icons.Default.PlayArrow,null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp));Text("Putar semua")
+      }
+      Box(Modifier.weight(1f)){SongGrid(list,nowId,pl,null,{playNext(it)},{enqueue(it)}){play(listOf(list[it]),0)}}
+     }
+    } else SongGrid(list,nowId,pl,if(d[0]=='p')n else null,{playNext(it)},{enqueue(it)}){play(list,it)}
    }
   } else {
    HorizontalPager(state = pagerState, modifier = Modifier.padding(top=pad.calculateTopPadding()).fillMaxSize(), verticalAlignment = Alignment.Top) { page ->
     when(page){
-     0->HomeTab(byFolder){detail="f:$it"}
+     0->HomeTab(byFolder,if(ytOn)ytState else null,{detail="f:$it"}){detail=YT_DETAIL}
      1->Groups(byAlbum){detail="a:$it"}
      2->Groups(byArtist){detail="r:$it"}
      else->PlaylistTab(pl,byId){detail="p:$it"}
@@ -636,49 +749,58 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
   }
  }
 
- if(showStayAwakeHint)AlertDialog(
+ if(showStayAwakeHint)AlertDialog(containerColor=dlgColor(),
   onDismissRequest={showStayAwakeHint=false},
   title={Text("Stay awake aktif")},
   text={Text("Layar akan tetap menyala selama musik diputar. Tekan cover di pemutar kapan saja untuk menyalakan atau mematikan fitur ini.")},
   confirmButton={TextButton({tick();showStayAwakeHint=false}){Text("Mengerti")}}
  )
  PlayerError.text?.let{err->
-  AlertDialog(
-   onDismissRequest={PlayerError.text=null},
-   title={Text("Gagal memutar")},
-   text={Box(Modifier.heightIn(max=320.dp)){SelectionContainer{
-    Text(err,Modifier.verticalScroll(rememberScrollState()),fontSize=11.sp,lineHeight=15.sp,fontFamily=androidx.compose.ui.text.font.FontFamily.Monospace)}}},
+  // net = lagu YouTube gagal dimuat meski sudah diulang dan dilewati -> pesan masalah jaringan, detail teknis tetap bisa disalin
+  val net=PlayerError.net
+  AlertDialog(containerColor=dlgColor(),
+   onDismissRequest={PlayerError.clear()},
+   title={Text(if(net)"Gagal memuat lagu" else "Gagal memutar")},
+   text={Column{
+    GlassDialogBlur()
+    if(net)Text("Lagu tidak dapat dimuat meski sudah dicoba ulang dan dilewati. Kemungkinan ada masalah jaringan, periksa koneksi internet kamu lalu coba lagi.",Modifier.padding(bottom=12.dp))
+    Box(Modifier.heightIn(max=320.dp)){SelectionContainer{
+     Text(err,Modifier.verticalScroll(rememberScrollState()),fontSize=11.sp,lineHeight=15.sp,fontFamily=androidx.compose.ui.text.font.FontFamily.Monospace)}}
+   }},
    confirmButton={TextButton({tick()
     (c.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
      .setPrimaryClip(android.content.ClipData.newPlainText("error",err))}){Text("Salin")}},
-   dismissButton={TextButton({tick();PlayerError.text=null}){Text("Tutup")}}
+   dismissButton={TextButton({tick();PlayerError.clear()}){Text("Tutup")}}
   )
  }
  if(showLyrics&&cur!=null)LyricsSheet(cur,pos){showLyrics=false}
  if(showSleep)SleepDialog(sleepEnd,sleepNow,{m->Sleep.set(c,m);sleepEnd=Sleep.end(c);showSleep=false},{showSleep=false})
  if(showEq)EqDialog{showEq=false}
 
- if(showFirstRun)AlertDialog(
+ if(showFirstRun)AlertDialog(containerColor=dlgColor(),
   onDismissRequest={},
   title={Text("Pilih folder musik")},
   text={Text("Pilih folder yang ingin dipindai sebagai sumber musik. Kamu bisa memilih lebih dari satu folder dan mengubahnya kapan saja lewat tombol pengaturan.")},
   confirmButton={TextButton({tick();showFirstRun=false;folderPicker.launch(null)}){Text("Pilih folder")}},
   dismissButton={TextButton({tick();showFirstRun=false;Folders.markPrompted(c);reloadSongs()}){Text("Pindai semua folder")}}
  )
- if(showSettings)SettingsDialog(mode,onMode,folders,{folderPicker.launch(null)},{Folders.remove(c,it);reloadSongs()},{Folders.clear(c);reloadSongs()},{showSettings=false})
+ if(showSettings)SettingsDialog(mode,onMode,ytOn,{on->ytOn=on;appSp.edit().putBoolean("yt_enabled",on).apply()},ytMax,{m->ytMax=m;appSp.edit().putBoolean("yt_max_quality",m).apply()},glass,onGlass,folders,{folderPicker.launch(null)},{Folders.remove(c,it);reloadSongs()},{Folders.clear(c);reloadSongs()},{showSettings=false})
  }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable fun FloatingNav(tab:Int,cur:Song?,playing:Boolean,pos:State<Long>,ctrl:MediaController?,dragMod:Modifier,onSelect:(Int)->Unit){
  val items=listOf("Home" to Icons.Default.Home,"Album" to Icons.Default.Album,"Artis" to Icons.Default.Person,"Playlist" to Icons.AutoMirrored.Filled.QueueMusic)
+ val iw=56.dp
+ val glass=LocalGlass.current
  val tick=rememberTick()
  Box(dragMod.fillMaxWidth().navigationBarsPadding().padding(horizontal=24.dp,vertical=12.dp),contentAlignment=Alignment.Center){
-  Surface(shape=RoundedCornerShape(50),color=MaterialTheme.colorScheme.surfaceContainerHigh,tonalElevation=0.dp,shadowElevation=10.dp){
+  Surface(shape=RoundedCornerShape(50),color=glassColor(MaterialTheme.colorScheme.surfaceContainerHigh,0.55f),tonalElevation=0.dp,shadowElevation=if(glass)0.dp else 10.dp,
+   border=if(glass)BorderStroke(1.dp,glassEdge) else null){
    Row(Modifier.animateContentSize().padding(8.dp),horizontalArrangement=Arrangement.spacedBy(4.dp),verticalAlignment=Alignment.CenterVertically){
     items.forEachIndexed{i,(t,ic)->
      val sel=tab==i
-     Box(Modifier.width(56.dp).height(48.dp).clip(CircleShape)
+     Box(Modifier.width(iw).height(48.dp).clip(CircleShape)
       .background(if(sel)MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
       .clickable{tick();onSelect(i)},contentAlignment=Alignment.Center){
       Icon(ic,t,tint=if(sel)MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -708,8 +830,10 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  Row(Modifier.fillMaxWidth(),Arrangement.SpaceBetween){Text(fmt(p));Text(fmt(dur))}
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable fun Now(s:Song,ctrl:MediaController?,playing:Boolean,pos:State<Long>,shuffle:Boolean,repeat:Int,visible:Boolean,overlay:Boolean,dragMod:Modifier,stayAwake:Boolean,onStayAwake:()->Unit,sleepEnd:Long,onSleep:()->Unit,onEq:()->Unit,onLyrics:()->Unit,close:()->Unit){
  var lines by remember(s.id){mutableStateOf<List<Line>?>(null)}
+ var showInfo by remember{mutableStateOf(false)}   // tekan lama cover = kartu info metadata lagu
  val ctx=LocalContext.current
  LaunchedEffect(s.id){lines=Lyrics.get(ctx,s)}
  val idx by remember(s.id){derivedStateOf{lines?.indexOfLast{it.ms<=pos.value}?:-1}}
@@ -726,6 +850,7 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
  val vizPlaying=playing&&!overlay
  val vf=rememberViz(vizPlaying,visible&&!vizOff)
  Surface(Modifier.fillMaxSize().then(dragMod),shape=RoundedCornerShape(topStart=28.dp,topEnd=28.dp)){Box(Modifier.fillMaxSize()){
+  if(LocalGlass.current)GlassCoverBackdrop(s)
   Column(Modifier.fillMaxSize().navigationBarsPadding().padding(horizontal=24.dp)){
    
    BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)){
@@ -733,7 +858,7 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
     // tekan cover = aktif/nonaktifkan stay awake. Border cover selalu tampil dengan tampilan yang sama, tidak terikat status stay awake
     @Composable fun CoverArt(size:Dp){
      Box(Modifier.size(size).shadow(5.dp,CircleShape,clip=false,ambientColor=Color.Black.copy(alpha=0.6f),spotColor=Color.Black.copy(alpha=0.6f))
-      .clip(CircleShape).clickable{tick();onStayAwake()}
+      .clip(CircleShape).combinedClickable(onClick={tick();onStayAwake()},onLongClick={tick();showInfo=true})
       .border(3.dp,on,CircleShape)){
       Cover(s, Modifier.fillMaxSize(), shape = CircleShape, px = 700, zoom = 1.12f)
      }
@@ -816,6 +941,8 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
   LaunchedEffect(sleepActive){while(sleepActive){nowMs=System.currentTimeMillis();delay(1000)}}
   Row(Modifier.align(Alignment.TopStart).statusBarsPadding().padding(4.dp),verticalAlignment=Alignment.CenterVertically){
    IconButton({tick();close()}){Icon(Icons.Default.KeyboardArrowDown,null)}
+   // stay awake aktif: ikon mata di samping panah bawah
+   if(stayAwake){Icon(Icons.Default.Visibility,"Stay awake aktif",Modifier.size(18.dp),tint=on);Spacer(Modifier.width(8.dp))}
    if(sleepActive){
     Icon(Icons.Default.Timer,null,Modifier.size(16.dp),tint=on);Spacer(Modifier.width(4.dp))
     Text(if(sleepEnd<0)"Akhir lagu" else fmt((sleepEnd-nowMs).coerceAtLeast(0L)),style=MaterialTheme.typography.labelLarge,color=on)
@@ -833,6 +960,7 @@ private val WN = intArrayOf(1, 2, -3, 4, -6)
     Icon(Icons.Default.GraphicEq,"Ganti visualizer",tint=if(vizOff)LocalContentColor.current.copy(alpha=0.4f) else LocalContentColor.current)
    }
   }
+  if(showInfo)SongInfoCard(s){showInfo=false}
  }}
 }
 
@@ -952,7 +1080,8 @@ const val QUEUE_WIDTH_FRACTION=0.75f
     // alpha & posisi dibaca di fase layer/draw (bukan komposisi) -> tidak ada recomposition per frame
     Box(Modifier.fillMaxSize().graphicsLayer{alpha=p}.background(Color.Black.copy(alpha=0.45f)).pointerInput(Unit){detectTapGestures{go(0f)}})
     Surface(Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(dw).graphicsLayer{translationX=(1f-p)*dwPx},
-     shape=RoundedCornerShape(topStart=24.dp,bottomStart=24.dp),color=MaterialTheme.colorScheme.surfaceContainerHigh){
+     shape=RoundedCornerShape(topStart=24.dp,bottomStart=24.dp),color=glassColor(MaterialTheme.colorScheme.surfaceContainerHigh,0.72f),
+     border=if(LocalGlass.current)BorderStroke(1.dp,glassEdge) else null){
      QueuePanel(ctrl,byId,nowId,qv,onChanged)
     }
    }
@@ -964,14 +1093,15 @@ const val QUEUE_WIDTH_FRACTION=0.75f
  * Pengaturan (popup): baris 1 = folder sumber musik (bisa lebih dari satu), baris 2 = tema,
  * baris terakhir = kredit aplikasi.
  */
-@Composable fun SettingsDialog(mode:Int,onMode:(Int)->Unit,folders:List<String>,onAddFolder:()->Unit,onRemoveFolder:(String)->Unit,onAllFolders:()->Unit,onDismiss:()->Unit){
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable fun SettingsDialog(mode:Int,onMode:(Int)->Unit,ytOn:Boolean,onYt:(Boolean)->Unit,ytMax:Boolean,onYtMax:(Boolean)->Unit,glass:Boolean,onGlass:(Boolean)->Unit,folders:List<String>,onAddFolder:()->Unit,onRemoveFolder:(String)->Unit,onAllFolders:()->Unit,onDismiss:()->Unit){
  val c=LocalContext.current
  val tick=rememberTick()
  val appName=remember{c.applicationInfo.loadLabel(c.packageManager).toString()}
  val ver=remember{(runCatching{c.packageManager.getPackageInfo(c.packageName,0).versionName}.getOrNull()?:"1.0").trimStart('v','V')}
  val sub=MaterialTheme.colorScheme.onSurfaceVariant
- AlertDialog(onDismissRequest=onDismiss,title={Text("Pengaturan")},
-  text={Column(Modifier.verticalScroll(rememberScrollState())){
+ AlertDialog(containerColor=dlgColor(),onDismissRequest=onDismiss,title={Text("Pengaturan")},
+  text={GlassDialogBlur();Column(Modifier.verticalScroll(rememberScrollState())){
    // 1. folder sumber musik
    Text("Folder sumber musik",style=MaterialTheme.typography.titleSmall)
    Text(if(folders.isEmpty())"Semua folder dipindai" else "Hanya folder berikut yang dipindai",style=MaterialTheme.typography.bodySmall,color=sub)
@@ -989,12 +1119,49 @@ const val QUEUE_WIDTH_FRACTION=0.75f
     if(folders.isNotEmpty())TextButton({tick();onAllFolders()}){Text("Pindai semua")}
    }
    HorizontalDivider(Modifier.padding(vertical=16.dp))
+   // 1b. streaming YouTube
+   Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+    Column(Modifier.weight(1f)){
+     Text("Streaming YouTube",style=MaterialTheme.typography.titleSmall)
+     Text("Menambah daftar YouTube Trending di Home (tarik ke bawah untuk memuat ulang)",style=MaterialTheme.typography.bodySmall,color=sub)
+    }
+    Switch(ytOn,{tick();onYt(it)})
+   }
+   if(ytOn){
+    Spacer(Modifier.height(12.dp))
+    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+     Column(Modifier.weight(1f)){
+      Text("Kualitas audio tertinggi",style=MaterialTheme.typography.titleSmall)
+      Text(if(ytMax)"Memakai stream dengan bitrate terbesar yang tersedia (biasanya Opus). Lebih boros kuota." else "Standar: utamakan AAC/M4A",style=MaterialTheme.typography.bodySmall,color=sub)
+     }
+     Switch(ytMax,{tick();onYtMax(it)})
+    }
+   }
+   if(ytOn)Text("Memakai ekstraktor tidak resmi: bisa berhenti bekerja sewaktu-waktu dan tidak sesuai syarat layanan YouTube.",
+    style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.error,modifier=Modifier.padding(top=6.dp))
+   HorizontalDivider(Modifier.padding(vertical=16.dp))
+   // 1c. efek glass
+   Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+    Column(Modifier.weight(1f)){
+     Text("Glass effect",style=MaterialTheme.typography.titleSmall)
+     Text("Navbar, kartu, pemutar, dan dialog jadi tembus pandang seperti kaca. Blur latar sungguhan butuh Android 12+",style=MaterialTheme.typography.bodySmall,color=sub)
+    }
+    Switch(glass,{tick();onGlass(it)})
+   }
+   HorizontalDivider(Modifier.padding(vertical=16.dp))
    // 2. tema
    Text("Tema",style=MaterialTheme.typography.titleSmall)
    Spacer(Modifier.height(8.dp))
-   Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)){
-    listOf("Sistem","Terang","Gelap").forEachIndexed{i,t->
-     FilterChip(mode==i,{tick();onMode(i)},label={Text(t)})
+   val themes=listOf("Sistem","Terang","Gelap")
+   var themeOpen by remember{mutableStateOf(false)}
+   ExposedDropdownMenuBox(themeOpen,{themeOpen=it}){
+    OutlinedTextField(themes.getOrElse(mode){themes[0]},{},Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(),readOnly=true,singleLine=true,
+     trailingIcon={ExposedDropdownMenuDefaults.TrailingIcon(themeOpen)})
+    ExposedDropdownMenu(themeOpen,{themeOpen=false}){
+     themes.forEachIndexed{i,t->
+      DropdownMenuItem({Text(t)},{tick();onMode(i);themeOpen=false},
+       trailingIcon={if(mode==i)Icon(Icons.Default.Check,null,Modifier.size(18.dp))})
+     }
     }
    }
    HorizontalDivider(Modifier.padding(vertical=16.dp))
@@ -1011,8 +1178,8 @@ const val QUEUE_WIDTH_FRACTION=0.75f
 @Composable fun SleepDialog(endMs:Long,nowMs:Long,onPick:(Int)->Unit,onDismiss:()->Unit){
  val tick=rememberTick()
  val opts=listOf("15 menit" to 15,"30 menit" to 30,"45 menit" to 45,"60 menit" to 60,"Sampai lagu selesai" to -1)
- AlertDialog(onDismissRequest=onDismiss,title={Text("Sleep timer")},
-  text={Column{
+ AlertDialog(containerColor=dlgColor(),onDismissRequest=onDismiss,title={Text("Sleep timer")},
+  text={GlassDialogBlur();Column{
    if(endMs!=0L)Text(if(endMs<0)"Aktif: musik berhenti di akhir lagu ini" else "Aktif: musik berhenti dalam ${fmt((endMs-nowMs).coerceAtLeast(0L))}",
     color=MaterialTheme.colorScheme.primary,modifier=Modifier.padding(bottom=8.dp))
    opts.forEach{(t,m)->TextButton({tick();onPick(m)},Modifier.fillMaxWidth()){Text(t,Modifier.fillMaxWidth(),textAlign=TextAlign.Start)}}
@@ -1029,8 +1196,9 @@ const val QUEUE_WIDTH_FRACTION=0.75f
  val rng=Eq.range
  var on by remember{mutableStateOf(Eq.isOn(c))}
  val lv=remember{mutableStateListOf<Float>().apply{for(b in 0 until n)add(Eq.level(c,b).toFloat())}}
- AlertDialog(onDismissRequest={Eq.save(c);onDismiss()},title={Text("Equalizer")},
+ AlertDialog(containerColor=dlgColor(),onDismissRequest={Eq.save(c);onDismiss()},title={Text("Equalizer")},
   text={
+   GlassDialogBlur()
    if(n==0||rng==null)Text("Equalizer belum tersedia. Putar lagu terlebih dahulu.")
    else Column(Modifier.verticalScroll(rememberScrollState())){
     Row(Modifier.fillMaxWidth(),Arrangement.SpaceBetween,Alignment.CenterVertically){
