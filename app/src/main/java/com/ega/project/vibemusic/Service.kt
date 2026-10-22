@@ -9,7 +9,11 @@ import android.widget.RemoteViews
 import androidx.media3.common.*
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.RenderersFactory
 import androidx.media3.exoplayer.audio.DefaultAudioSink
@@ -20,8 +24,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.media3.session.*
 
-/** Error pemutaran terakhir; dibaca UI untuk ditampilkan di dialog (service dan UI satu proses). */
-object PlayerError{var text by mutableStateOf<String?>(null)}
+/**
+ * Error pemutaran terakhir; dibaca UI untuk ditampilkan di dialog (service dan UI satu proses).
+ * [net] = true bila error berasal dari lagu YouTube yang gagal dimuat setelah diulang dan dilewati (dianggap masalah jaringan).
+ */
+object PlayerError{
+ var text by mutableStateOf<String?>(null)
+ var net by mutableStateOf(false)
+ fun clear(){text=null;net=false}
+}
 
 @OptIn(UnstableApi::class)
 class PlaybackService:MediaSessionService(){
@@ -30,6 +41,43 @@ class PlaybackService:MediaSessionService(){
  private val h=Handler(Looper.getMainLooper())
  private val sleepStop=Runnable{session?.player?.pause();clearSleep()}
  private fun prefs()=getSharedPreferences("s",0)
+
+ // ---- penanganan error lagu YouTube: ulangi sekali -> lompat ke lagu berikutnya -> bila masih gagal tampilkan popup
+ private var errId:String?=null   // lagu yang sedang bermasalah
+ private var errStage=0           // 0 = normal, 1 = sedang diulang, 2 = sudah lompat ke lagu berikutnya
+ private fun resetErr(){errId=null;errStage=0}
+ private fun popup(txt:String,net:Boolean){h.post{PlayerError.net=net;PlayerError.text=txt}}
+ /** indeks lagu berikutnya di antrean (mengikuti shuffle/repeat); UNSET bila tidak ada lagu lain untuk dilompati */
+ private fun nextIndex():Int{
+  val p=exo?:return C.INDEX_UNSET
+  val cur=p.currentMediaItemIndex
+  val n=p.nextMediaItemIndex
+  if(n!=C.INDEX_UNSET&&n!=cur)return n
+  // repeat satu lagu: ExoPlayer akan mengulang lagu yang sama, jadi geser manual
+  return if(p.repeatMode==Player.REPEAT_MODE_ONE&&cur+1<p.mediaItemCount)cur+1 else C.INDEX_UNSET
+ }
+ private fun onYtError(p:ExoPlayer,item:MediaItem,txt:String){
+  val id=item.mediaId
+  if(id!=errId){errId=id;errStage=0}   // lagu lain (mis. pengguna pindah sendiri): mulai dari awal
+  when(errStage){
+   0->{
+    // gagal pertama: ulangi sekali. Url lama dibuang dulu karena url YouTube bisa kedaluwarsa
+    errStage=1
+    item.localConfiguration?.uri?.schemeSpecificPart?.removePrefix("//")?.let{Yt.forget(it)}
+    h.postDelayed({if(p.currentMediaItem?.mediaId==id&&p.playbackState==Player.STATE_IDLE)p.prepare()},700L)
+   }
+   1->{
+    // ulangan gagal: lompat ke lagu berikutnya
+    val n=nextIndex()
+    if(n==C.INDEX_UNSET){resetErr();popup(txt,true)}
+    else{
+     errStage=2;errId=p.getMediaItemAt(n).mediaId
+     p.seekTo(n,0L);p.prepare()
+    }
+   }
+   else->{resetErr();popup(txt,true)}   // lagu berikutnya juga gagal: kemungkinan besar masalah jaringan
+  }
+ }
 
  private fun clearSleep(){
   h.removeCallbacks(sleepStop)
@@ -49,6 +97,7 @@ class PlaybackService:MediaSessionService(){
  override fun onCreate(){
   super.onCreate()
   prefs().edit().remove("sleep_end").apply()
+  Yt.init(this)
   // Renderer audio dengan SpectrumSink: audio tidak diubah, hanya dibaca untuk visualizer
   val renderers=RenderersFactory{handler,_,audioListener,_,_->
    arrayOf<Renderer>(MediaCodecAudioRenderer(this@PlaybackService,MediaCodecSelector.DEFAULT,handler,audioListener,
@@ -56,7 +105,10 @@ class PlaybackService:MediaSessionService(){
   }
   // DIAGNOSA: ubah ke false untuk mematikan SpectrumSink (visualizer jadi animasi dekoratif)
   val useTap=true
-  val p=ExoPlayer.Builder(this,if(useTap)renderers else androidx.media3.exoplayer.DefaultRenderersFactory(this)).setAudioAttributes(AudioAttributes.DEFAULT,true).setHandleAudioBecomingNoisy(true).build()
+  // sumber media: file lokal tetap lewat DefaultDataSource; alamat yt://<id> diubah jadi url audio YouTube saat dibuka
+  val http=DefaultHttpDataSource.Factory().setUserAgent(Yt.UA).setAllowCrossProtocolRedirects(true).setConnectTimeoutMs(15000).setReadTimeoutMs(20000)
+  val sources=DefaultMediaSourceFactory(ResolvingDataSource.Factory(DefaultDataSource.Factory(this,http),YtResolver))
+  val p=ExoPlayer.Builder(this,if(useTap)renderers else androidx.media3.exoplayer.DefaultRenderersFactory(this)).setMediaSourceFactory(sources).setAudioAttributes(AudioAttributes.DEFAULT,true).setHandleAudioBecomingNoisy(true).build()
   exo=p
   p.addListener(object:Player.Listener{
    override fun onEvents(pl:Player,e:Player.Events){
@@ -69,7 +121,12 @@ class PlaybackService:MediaSessionService(){
    override fun onPlayerError(error:PlaybackException){
     Log.e("VibePlayer","Playback error: ${error.errorCodeName}",error)
     val txt="${error.errorCodeName} (${error.errorCode})\n${error.message}\n\n${Log.getStackTraceString(error)}"
-    h.post{PlayerError.text=txt}
+    val item=p.currentMediaItem
+    if(item!=null&&item.localConfiguration?.uri?.scheme=="yt")onYtError(p,item,txt)
+    else{resetErr();popup(txt,false)}   // lagu lokal: tetap popup error seperti biasa
+   }
+   override fun onPlaybackStateChanged(state:Int){
+    if(state==Player.STATE_READY)resetErr()   // berhasil dimuat: hitungan gagal dimulai dari nol lagi
    }
    override fun onAudioSessionIdChanged(audioSessionId:Int){Eq.attach(this@PlaybackService,audioSessionId)}
   })

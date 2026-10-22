@@ -15,11 +15,22 @@ import java.net.*
 
 const val UA="Artis tidak dikenal";const val UB="Album tidak dikenal";const val UG="Genre tidak dikenal"
 
-data class Song(val id:Long,val title:String,val artist:String,val album:String,val genre:String,val dur:Long,val folder:String?){
- val uri get()=ContentUris.withAppendedId(M.EXTERNAL_CONTENT_URI,id)
+/** [web] = id video YouTube bila lagu berasal dari mode streaming; [thumb] = url cover online. */
+data class Song(val id:Long,val title:String,val artist:String,val album:String,val genre:String,val dur:Long,val folder:String?,
+ val web:String?=null,val thumb:String?=null){
+ val uri:Uri get()=if(web!=null)Uri.parse("yt://$web") else ContentUris.withAppendedId(M.EXTERNAL_CONTENT_URI,id)
 }
-fun Song.item()=MediaItem.Builder().setMediaId(id.toString()).setUri(uri)
- .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setArtist(artist).setAlbumTitle(album).build()).build()
+/** id lagu online: hash 64-bit dari id video, selalu negatif supaya tidak bentrok dengan id MediaStore */
+fun ytId(video:String):Long{
+ var h=-3750763034362895579L
+ for(ch in "yt:$video"){h=h xor ch.code.toLong();h*=1099511628211L}
+ return h or Long.MIN_VALUE
+}
+fun Song.item():MediaItem{
+ val md=MediaMetadata.Builder().setTitle(title).setArtist(artist).setAlbumTitle(album)
+ if(thumb!=null)md.setArtworkUri(Uri.parse(thumb))
+ return MediaItem.Builder().setMediaId(id.toString()).setUri(uri).setMediaMetadata(md.build()).build()
+}
 
 /**
  * Folder sumber musik pilihan pengguna. Disimpan sebagai id dokumen SAF (mis. "primary:Music/Rock").
@@ -112,8 +123,11 @@ object Covers{
   cache.get(s.id)?.let{return it}
   if(s.id in none)return null
   return sem.withPermit{withContext(Dispatchers.IO){
-   try{c.contentResolver.loadThumbnail(s.uri,Size(px,px),null).also{cache.put(s.id,it)}}
-   catch(e:Exception){none.add(s.id);null}
+   try{
+    val b=if(s.web!=null||s.thumb!=null)Art.load(c,s,px)?:error("thumb")
+     else Art.embedded(c,s,px)?:c.contentResolver.loadThumbnail(s.uri,Size(px,px),null)   // lagu lokal: cover di metadata dulu, baru thumbnail MediaStore
+    b.also{cache.put(s.id,it)}
+   }catch(e:Exception){none.add(s.id);null}
   }}
  }
 }
@@ -125,7 +139,7 @@ class Playlists(c:Context){
  private fun save()=sp.edit().putString("d",JSONObject(map.mapValues{JSONArray(it.value)}).toString()).apply()
  fun create(n:String){ if(n.isNotBlank()&&n !in map){map[n]=emptyList();save()} }
  fun delete(n:String){map.remove(n);save()}
- fun add(n:String,id:Long){ val l=map[n].orEmpty(); if(id !in l){map[n]=l+id;save()} }
+ fun add(n:String,id:Long){ if(id<0)Online.persist(id); val l=map[n].orEmpty(); if(id !in l){map[n]=l+id;save()} }
  fun remove(n:String,id:Long){map[n]=map[n].orEmpty()-id;save()}
 }
 
@@ -143,7 +157,32 @@ object Lyrics{
 
  private fun file(c:Context,s:Song):java.io.File{
   val dir=java.io.File(c.filesDir,"lyrics");dir.mkdirs()
-  return java.io.File(dir,"${s.id}.lrc")
+  // lagu online memakai nama berkas sendiri (berkas lama bisa berisi hasil kosong dari pencarian yang dulu gagal)
+  return java.io.File(dir,if(s.web!=null)"yt_${s.id}.lrc" else "${s.id}.lrc")
+ }
+
+ /** Cari lirik tersinkron lagu online di LRCLIB. null = tidak ada yang cocok. Melempar IOException bila server/jaringan bermasalah. */
+ private fun searchOnline(s:Song):String?{
+  fun e(x:String)=URLEncoder.encode(x,"UTF-8")
+  val title=Yt.cleanTitle(s.title,s.artist)
+  val urls=listOf("https://lrclib.net/api/search?track_name=${e(title)}&artist_name=${e(s.artist)}",
+   "https://lrclib.net/api/search?q=${e("${s.artist} $title")}")
+  for(u in urls){
+   val cn=URL(u).openConnection() as HttpURLConnection
+   cn.setRequestProperty("User-Agent","VibeMusic/1.0");cn.connectTimeout=8000;cn.readTimeout=8000
+   if(cn.responseCode!=200)throw java.io.IOException("LRCLIB ${cn.responseCode}")
+   val a=JSONArray(cn.inputStream.bufferedReader().readText())
+   var best:String?=null;var bd=Double.MAX_VALUE
+   for(i in 0 until a.length()){
+    val o=a.getJSONObject(i)
+    val sl=o.optString("syncedLyrics")
+    if(sl.isBlank()||sl=="null")continue
+    val d=Math.abs(o.optDouble("duration",0.0)-s.dur/1000.0)
+    if(d<bd){bd=d;best=sl}
+   }
+   if(best!=null&&bd<=8.0)return best
+  }
+  return null
  }
 
  suspend fun get(c:Context,s:Song):List<Line> = mem[s.id]?:withContext(Dispatchers.IO){
@@ -154,7 +193,15 @@ object Lyrics{
    if(txt.isNotBlank()||System.currentTimeMillis()-f.lastModified()<RETRY_MS)
     return@withContext parse(txt).also{mem[s.id]=it}
   }
-  // 2) ambil dari LRCLIB lalu simpan
+  // 2a) lagu YouTube: album tidak diketahui, jadi /get tidak cocok -> cari lewat /search dan pilih yang durasinya paling dekat
+  if(s.web!=null){
+   return@withContext try{
+    val t=searchOnline(s)?:""
+    runCatching{f.writeText(t)}
+    parse(t).also{mem[s.id]=it}
+   }catch(e:Exception){emptyList()}   // galat jaringan/server: tidak disimpan, dicoba lagi nanti
+  }
+  // 2b) ambil dari LRCLIB lalu simpan
   try{
    fun e(x:String)=URLEncoder.encode(x,"UTF-8")
    val u="https://lrclib.net/api/get?track_name=${e(s.title)}&artist_name=${e(s.artist)}&album_name=${e(s.album)}&duration=${s.dur/1000}"
